@@ -33,8 +33,14 @@ Wazuh manager and the vulnerable target run as separate Docker containers on **d
 - **Recon:** Full-port Nmap scan (`nmap -sV -p- <target>`) identified 20+ open services, including legacy SSH (OpenSSH 4.7p1) and Telnet.
 - **Pivot:** Initial brute-force attempt against SSH failed due to a real-world crypto compatibility issue — the target's 2007-era SSH server only supports deprecated key exchange algorithms (`ssh-rsa`, `ssh-dss`) that modern SSH clients refuse to negotiate. Pivoted to Telnet (same MITRE technique, same target concept) to demonstrate T1110 without fighting deprecated cryptography.
 - **Execution:** Hydra dictionary attack (`hydra -L usernames.txt -P passwords.txt telnet://<target>`) cracked valid credentials: `msfadmin:msfadmin`.
+
+![Hydra crack](evidence/03-attack1-hydra-crack.png)
+
 - **Proof of access:** Logged in via Telnet, confirmed with `whoami`, `id`, `uname -a`.
 - **Detection:** Caught by Wazuh's built-in rule **2501** ("syslog: User authentication failure") via forwarded `auth.log` entries — 2 alerts generated (failed + successful login), Level 5.
+
+![Wazuh dashboard showing detection](evidence/01-attack1-wazuh-dashboard.png)
+![Wazuh events table](evidence/02-attack1-wazuh-events-table.png)
 
 ### Attack 2 — UnrealIRCd 3.2.8.1 Backdoor Exploit
 **MITRE ATT&CK:** T1190 (Exploit Public-Facing Application)
@@ -43,6 +49,9 @@ Wazuh manager and the vulnerable target run as separate Docker containers on **d
 - **Vulnerability:** UnrealIRCd 3.2.8.1 is a known-backdoored release (the official 2010 download was compromised by attackers) — CVE-2010-2075. Any client can trigger command execution via a magic string sent over the IRC protocol, no authentication required.
 - **Execution:** Exploited via Metasploit (`exploit/unix/irc/unreal_ircd_3281_backdoor`), yielding a Meterpreter session.
 - **Impact:** Confirmed **root** access (`getuid` → root, `id` → uid=0(root)).
+
+![Root access proof](evidence/04-attack2-root-access.png)
+
 - **Detection:** Initially undetected. See Detection Engineering below — this is the most valuable finding of the project.
 
 ### Attack 3 — Post-Exploitation Recon
@@ -70,12 +79,14 @@ The vulnerable target runs on a completely different Docker network than Wazuh. 
 
 After confirming Attack 1 was detected, Attack 2 (the root-access exploit) produced zero alerts — the raw archive log confirmed the exploit simply never touched the Linux authentication subsystem our pipeline was watching. This is a realistic and important finding: exploit-based attacks against vulnerable services often bypass auth-log monitoring entirely, since they don't go through a login flow.
 
-Rather than stop at reporting the gap, I built a custom lightweight process-monitoring script that:
+Rather than stop at reporting the gap, I built a custom lightweight process-monitoring script (`process_monitor.sh`) that:
 - Polls the target container's process list (`docker top`) every second from the host
 - Diffs it against a known-good baseline
 - Forwards any newly-spawned process to Wazuh via direct UDP syslog (`logger -n <wazuh-ip> -P 514 -d`)
 
-This successfully caught the exploit's payload process (`./vyIswKBbSaTc`) live, closing the detection gap.
+This successfully caught the exploit's payload process live:
+
+![Custom detection catching the exploit payload](evidence/05-attack2-custom-detection-catch.png)
 
 **Tuning note:** the script also flagged `distccd`'s per-connection worker processes as "new" (expected noise from a daemon that spawns a fresh process per connection) — a real false-positive pattern that would need an allow-list in a production deployment.
 
